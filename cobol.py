@@ -1,4 +1,9 @@
+import logging
 import re
+
+
+__logger__ = logging.getLogger("Python-Cobol")
+
 
 class CobolPatterns:
     opt_pattern_format = "({})?"
@@ -10,11 +15,11 @@ class CobolPatterns:
     row_pattern_pic = r'\s+PIC\s+(?P<pic>\S+)'
     row_pattern_end = r'\.$'
 
-    row_pattern = re.compile(row_pattern_base + 
-                             opt_pattern_format.format(row_pattern_redefines) + 
-                             opt_pattern_format.format(row_pattern_occurs) + 
-                             opt_pattern_format.format(row_pattern_indexed_by) + 
-                             opt_pattern_format.format(row_pattern_pic) + 
+    row_pattern = re.compile(row_pattern_base +
+                             opt_pattern_format.format(row_pattern_redefines) +
+                             opt_pattern_format.format(row_pattern_occurs) +
+                             opt_pattern_format.format(row_pattern_indexed_by) +
+                             opt_pattern_format.format(row_pattern_pic) +
                              row_pattern_end)
 
     pic_pattern_repeats = re.compile(r'(.)\((\d+)\)')
@@ -30,9 +35,9 @@ def parse_pic_string(pic_str):
 
         if not match:
             break
-        
+
         expanded_str = match.group(1) * int(match.group(2))
-        
+
         pic_str = CobolPatterns.pic_pattern_repeats.sub(expanded_str, pic_str, 1)
 
     # Match to types
@@ -63,7 +68,7 @@ def clean_cobol(lines):
 
     output = []
 
-    for row in lines:            
+    for row in lines:
         row = row[6:72].rstrip()
 
         if row == "" or row[0] in ('*','/'):
@@ -75,30 +80,29 @@ def clean_cobol(lines):
             output.append(" ".join(holder))
 
             holder = []
-            
 
     if len(holder) > 0:
-        print "[WARNING] probably invalid COBOL - found unfinished line: ", " ".join(holder)
+        __logger__.warning("Probably invalid COBOL - found unfinished line: %s" % " ".join(holder))
 
     return output
 
-"""
-Parses the COBOL
- - converts the COBOL line into a dictionarty containing the information
- - parses the pic information into type, length, precision 
- - handles redefines
-"""
 def parse_cobol(lines):
+    """
+    Parses the COBOL
+     - converts the COBOL line into a dictionary containing the information
+     - parses the pic information into type, length, precision
+     - handles redefines
+    """
     output = []
 
-    intify = ["level","occurs"]
+    intify = ["level", "occurs"]
 
     # All in 1 line now, let's parse
     for row in lines:
         match = CobolPatterns.row_pattern.match(row.strip())
 
         if not match:
-            print "Found unmatched row", row.strip()
+            __logger__.warning("Found unmatched row", row.strip())
             continue
 
         match = match.groupdict()
@@ -120,7 +124,8 @@ def parse_cobol(lines):
 
                 match['redefines'] = None
             except IndexError:
-                print "Could not find the field to be redefined ({}) for row: {}".format(match['redefines'], row.strip())
+                __logger__.warning("Could not find the field to be redefined ({}) for row: {}".format(
+                    match['redefines'], row.strip()))
 
         output.append(match)
 
@@ -150,7 +155,7 @@ def handle_occurs(lines, occurs, level_diff=0, name_postfix=""):
     output = []
 
     for i in range(1, occurs+1):
-        
+
         skipTill = 0
         new_name_postfix = name_postfix if occurs == 1 else name_postfix + '-' + str(i)
 
@@ -171,7 +176,7 @@ def handle_occurs(lines, occurs, level_diff=0, name_postfix=""):
                 # + "-" + str(i) if occurs > 1 else row['name'] + name_postfix
 
                 output.append(new_row)
-            
+
             else:
                 if row["pic"] is not None:
                     # If it has occurs and pic just repeat the same line multiple times
@@ -182,7 +187,7 @@ def handle_occurs(lines, occurs, level_diff=0, name_postfix=""):
 
                         # First time occurs is just 1, we don't want to add _1 after *every* field
                         row_to_add["name"] = row['name'] + new_name_postfix + '-' + str(j)
-                        # + "-" + str(i) + "-" + str(j) if occurs > 1 else row['name'] + name_postfix + "-" + str(j) 
+                        # + "-" + str(i) + "-" + str(j) if occurs > 1 else row['name'] + name_postfix + "-" + str(j)
 
                         output.append(row_to_add)
 
@@ -199,15 +204,16 @@ def handle_occurs(lines, occurs, level_diff=0, name_postfix=""):
 
     return output
 
-"""
-Clean the names.
 
-Options to:
- - strip prefixes on names
- - enforce unique names
- - make database safe names by converting - to _
-"""
 def clean_names(lines, ensure_unique_names=False, strip_prefix=False, make_database_safe=False):
+    """
+    Clean the names.
+
+    Options to:
+     - strip prefixes on names
+     - enforce unique names
+     - make database safe names by converting - to _
+    """
     names = {}
 
     for row in lines:
@@ -229,92 +235,8 @@ def clean_names(lines, ensure_unique_names=False, strip_prefix=False, make_datab
 
         if make_database_safe:
             row['name'] = row['name'].replace("-","_")
-
-
     return lines
 
+
 def process_cobol(lines):
-    return clean_names(denormalize_cobol(parse_cobol(clean_cobol(lines))), True, True, True)    
-
-# Prints a Copybook compatible file
-def print_cobol(lines):
-    output = []
-
-    default_padding = ' ' * 7
-
-    levels = [0]
-
-    for row in lines:
-        row_output = []
-
-        if row['level'] > levels[-1]:
-            levels.append(row['level'])
-        else:
-            while row['level'] < levels[-1]:
-                levels.pop()
-
-        row_output.append( (len(levels)-1) * '  ' )
-        row_output.append( "{0:02d}  ".format(row['level']) )
-        row_output.append( row['name'])
-
-        if row['indexed_by'] is not None:
-            row_output.append(" INDEXED BY "+row['indexed_by'])
-
-        if row['occurs'] is not None:
-            row_output.append( " OCCURS {0:04d} TIMES".format(row['occurs']) )
-
-        if row['pic'] is not None:
-            row_output.append( " PIC " + row['pic'] )
-
-        row_output.append(".")
-
-        tot_length = 0
-        max_data_length = 66
-        outp = default_padding
-
-        for data in row_output:
-
-            if len(outp) + len(data) + 1 > max_data_length:
-                # Makes rows 80 chars
-                outp += (80-len(outp)) * ' '
-
-                output.append(outp)
-
-                # Start the following line with an extra padding
-                outp = default_padding + (len(levels)-1) * '  ' + '    '
-
-            outp += data
-
-        outp += (80-len(outp)) * ' '
-        output.append(outp)
-
-    print "\n".join(output)
-
-if __name__ == '__main__':
-    import argparse
-    import os.path
-
-    parser = argparse.ArgumentParser(description="Parse COBOL Copybooks")
-    parser.add_argument("filename", help="The filename of the copybook.")
-    parser.add_argument("--skip-all-processing", help="Only processes the redefines.", default=False, action="store_true")
-    parser.add_argument("--skip-unique-names", help="Skips making all names unique.", default=False, action="store_true")
-    parser.add_argument("--skip-denormalize", help="Skips denormalizing the COBOL.", default=False, action="store_true")
-    parser.add_argument("--skip-strip-prefix", help="Skips stripping the prefix from the names.", default=False, action="store_true")
-
-    args = parser.parse_args() 
-
-    if not os.path.isfile(args.filename):
-        print "Could not find", args.filename
-        exit()
-
-    with open(args.filename,'r') as f:
-        lines = parse_cobol(clean_cobol(f.readlines()))
-
-        if not args.skip_all_processing:
-            if not args.skip_denormalize:
-                lines = denormalize_cobol(lines)
-
-            if not args.skip_strip_prefix or not args.skip_unique_names:
-                lines = clean_names(lines, not args.skip_unique_names, not args.skip_strip_prefix)
-
-        print_cobol(lines)
+    return clean_names(denormalize_cobol(parse_cobol(clean_cobol(lines))), True, True, True)
