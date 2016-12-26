@@ -1,25 +1,26 @@
 import logging
 import re
-
+logging.basicConfig()
 
 __logger__ = logging.getLogger("Python-Cobol")
 
-
 class CobolPatterns:
-    opt_pattern_format = "({})?"
+    opt_pattern_format = "({0})?"
 
     row_pattern_base = r'^(?P<level>\d{2})\s+(?P<name>\S+)'
-    row_pattern_occurs = r'\s+OCCURS (?P<occurs>\d+) TIMES'
-    row_pattern_indexed_by = r"\s+INDEXED BY\s(?P<indexed_by>\S+)"
-    row_pattern_redefines = r"\s+REDEFINES\s(?P<redefines>\S+)"
-    row_pattern_pic = r'\s+PIC\s+(?P<pic>\S+)'
-    row_pattern_end = r'\.$'
+    row_pattern_occurs_before = r'\s+OCCURS\s+(?P<occurs_before>\d+)(\s+TIMES\s+)?'
+    row_pattern_occurs_after = r'\s+OCCURS\s+(?P<occurs_after>\d+)(\s+TIMES\s+)?'
+    row_pattern_indexed_by = r'\s+INDEXED BY\s+(?P<indexed_by>\S+)'
+    row_pattern_redefines = r'\s+REDEFINES\s+(?P<redefines>\S+)'
+    row_pattern_pic = r'\s+PIC\s+(?P<pic>\S+)(?:(\s+SIGN\s+(IS\s+)?)(?P<sign_separate>LEADING|TRAILING)\s+SEPARATE)?(?P<comp>\s*(COMP-\d|COMP))?'
+    row_pattern_end = r'\s*\.$'
 
     row_pattern = re.compile(row_pattern_base +
                              opt_pattern_format.format(row_pattern_redefines) +
-                             opt_pattern_format.format(row_pattern_occurs) +
+                             opt_pattern_format.format(row_pattern_occurs_before) +
                              opt_pattern_format.format(row_pattern_indexed_by) +
                              opt_pattern_format.format(row_pattern_pic) +
+                             opt_pattern_format.format(row_pattern_occurs_after) +
                              row_pattern_end)
 
     pic_pattern_repeats = re.compile(r'(.)\((\d+)\)')
@@ -28,7 +29,7 @@ class CobolPatterns:
 
 
 # Parse the pic string
-def parse_pic_string(pic_str):
+def parse_pic_string(pic_str,sign_separate):
     # Expand repeating chars
     while True:
         match = CobolPatterns.pic_pattern_repeats.search(pic_str)
@@ -49,7 +50,7 @@ def parse_pic_string(pic_str):
         data_type = 'Char'
 
     # Handle signed
-    if pic_str[0] == "S":
+    if pic_str[0] == "S" and not sign_separate:
         data_type = "Signed " + data_type
         pic_str = pic_str[1:]
 
@@ -102,16 +103,26 @@ def parse_cobol(lines):
         match = CobolPatterns.row_pattern.match(row.strip())
 
         if not match:
-            __logger__.warning("Found unmatched row %s" % row.strip())
+            __logger__.warning("Found unmatched row : '%s'" % row.strip())
             continue
 
         match = match.groupdict()
+
+        # check only one occurs
+        if match['occurs_before'] !=None and match['occurs_after'] !=None :
+            __logger__.warning("2 occurs definition found before and after picture definition in row %s" % row.strip())
+            continue
+
+        # get first occurs
+        match['occurs'] = match['occurs_before'] or match['occurs_after']
+
 
         for i in intify:
             match[i] = int(match[i] ) if match[i] is not None else None
 
         if match['pic'] is not None:
-            match['pic_info'] = parse_pic_string(match['pic'])
+            sign_separate=match['sign_separate']!=None # boolean true if sign_separate detected
+            match['pic_info'] = parse_pic_string(match['pic'],sign_separate)
 
         if match['redefines'] is not None:
             # Find item that is being redefined.
@@ -123,8 +134,12 @@ def parse_cobol(lines):
                 output = output[:redefinedItemIndex] + output[ redefinedItemIndex + len(related_group) + 1 : ]
 
                 match['redefines'] = None
+                # BY DEFAULT LAST REDEFINES IS KEEP
+                # TODO : ADD CHOICE : FIRST - LAST or SPECIFIC
+                #for ItemIndex in range(redefinedItemIndex,redefinedItemIndex + len(related_group) + 1) :
+                #    output[ItemIndex]['redefinedBy']=match['name']
             except IndexError:
-                __logger__.warning("Could not find the field to be redefined ({}) for row: {}".format(
+                __logger__.warning("Could not find the field to be redefined ({0}) for row: {1}".format(
                     match['redefines'], row.strip()))
 
         output.append(match)
@@ -150,7 +165,7 @@ def denormalize_cobol(lines):
 
 # Helper function
 # Will go ahead and denormalize the COBOL
-# Beacuse the OCCURS are removed the INDEXED BY will also be removed
+# Beacause the OCCURS are removed the INDEXED BY will also be removed
 def handle_occurs(lines, occurs, level_diff=0, name_postfix=""):
     output = []
 
@@ -217,11 +232,9 @@ def clean_names(lines, ensure_unique_names=False, strip_prefix=False, make_datab
     names = {}
 
     for row in lines:
+        row['original_name']=row['name']
         if strip_prefix:
             row['name'] = row['name'][ row['name'].find('-')+1 : ]
-
-            if row['indexed_by'] is not None:
-                row['indexed_by'] = row['indexed_by'][ row['indexed_by'].find('-')+1 : ]
 
         if ensure_unique_names:
             i = 1
